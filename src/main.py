@@ -1,6 +1,10 @@
+
 import os
-import json
 import copy
+
+from node import Node
+import serialization
+import google_drive_client
 
 class MyTestClass:
     def __init__(self):
@@ -10,120 +14,9 @@ class MyTestClass:
     def SayBlaBla(self):
         pass
 
-class Node:
-    def __init__(self, name: str, timestamp: str, type: str = "file", data = None):
-        self.name: str = name
-        self.timestamp: str = timestamp
-        self.type: str = type
-        self.data = data
-        self.parent: Node = None
-        self.children: set[Node] = set()
-        self.label_new: bool = False
-        self.label_removed: bool = False
-        # ?
-        self.label_fresher: bool = False
 
-    def __call__(self, msg: str):
-        print("this is Functor with message: {}".format(msg))
 
-    def __hash__(self):
-        return hash(self.name + self.type)
 
-    def __eq__(self, other):
-        if other == None:
-            return False
-        return self.name == other.name and self.type == other.type
-
-class NodeDeserializer:
-    def __init__(self, file_full_name: str):
-        self.dict_from_json: dict = {}
-        self.root_node: Node = None
-
-        with open(file_full_name, 'r') as json_file:
-            self.dict_from_json = json.load(json_file)
-
-        self.ConvertToTree()
-
-    def GetRootNode(self) -> Node:
-        return self.root_node
-
-    def ConvertToTree(self):
-        if len(self.dict_from_json.items()) != 1:
-            raise Exception("root items in 'dict from json' is zero or greater than 1")
-
-        root_node: Node = None
-        for key, value in self.dict_from_json.items():
-            root_node = Node(key, value["timestamp"], value["type"])
-            self.FillNode(root_node, value["content"])
-
-        self.root_node = root_node
-
-    def FillNode(self, node: Node, dict_from_json: dict):
-        for key, value in dict_from_json.items():
-            child = Node(key, value["timestamp"], value["type"])
-            node.children.add(child)
-            child.parent = node
-
-            if child.type == "dir":
-                self.FillNode(child, value["content"])
-
-class NodeSerializer:
-    def __init__(self, file_full_name: str):
-        self.json_file_name: str = file_full_name
-        self.dict_for_json: dict = {}
-
-    def __call__(self, node: Node) -> bool:
-        # this is root element in json
-        if len(self.dict_for_json) == 0:
-            if node.parent:
-                print("only node without parent can be root json element")
-                return False
-
-            self.dict_for_json = {node.name : {"type" : node.type, "timestamp" : node.timestamp, "content" : {}}}
-            return True
-
-        # find path for place
-        if not node.parent:
-            print("dict already has root, and only root node can be without parent")
-            return False
-
-        parent_elements_path: list[str] = [node.parent.name]
-        parent_node: Node = node.parent
-        while parent_node.parent:
-            parent_node = parent_node.parent
-            parent_elements_path.append(parent_node.name)
-        parent_elements_path.reverse()
-
-        # find place itself
-        place_for_insert = self.dict_for_json
-        for elem in parent_elements_path:
-            place_for_insert = place_for_insert.get(elem)
-            if place_for_insert:
-                place_for_insert = place_for_insert.get("content")
-            else:
-                print("one of node's [{}] parents [{}] is not found in dictionary for json".format(node.name, elem))
-                return False
-
-        # append
-        place_for_insert[node.name] = {"type" : node.type, "timestamp" : node.timestamp}
-        if node.type == "dir":
-            place_for_insert[node.name]["content"] = {}
-
-        return True
-
-    def Dump(self) -> bool:
-        if len(self.json_file_name) == 0:
-            print("dump file name is empty")
-            return False
-
-        if len(self.dict_for_json) == 0:
-            print("nothing to dump")
-            return False
-
-        with open(self.json_file_name, 'w', encoding='utf8') as json_file:
-            json.dump(self.dict_for_json, json_file, allow_nan=True)
-
-        return True
 
 class FileSystemTree:
     def __init__(self, root: Node = None):
@@ -156,7 +49,7 @@ class FileSystemTree:
                 return False
             parent_path.pop(0)
 
-            parent_node: Node = self.FindNode(self.root, parent_path)
+            parent_node = self.FindNode(self.root, parent_path)
             if parent_node:
                 parent_node.children.add(node)
                 node.parent = parent_node
@@ -192,39 +85,39 @@ def GetNodeNames(nodes: set[Node]):
         names.append(node.name)
     return names
 
-def CreateDifferenceTree(first_tree_root: Node, second_tree_root: Node) -> Node:
-    assert(first_tree_root == second_tree_root)
+def CreateDifferenceTree(node_1st: Node, node_2nd: Node) -> Node:
+    assert(node_1st == node_2nd)
 
-    if len(first_tree_root.children) == 0 and len(second_tree_root.children) == 0:
-        return copy.deepcopy(first_tree_root)
+    if len(node_1st.children) == 0 and len(node_2nd.children) == 0:
+        return copy.deepcopy(node_1st)
 
     # find difference
-    new_children_in_first_node: set[Node] = first_tree_root.children.difference(second_tree_root.children)
-    removed_children_in_first_node: set[Node] = second_tree_root.children.difference(first_tree_root.children)
-    common_childs: set[Node] = first_tree_root.children.intersection(second_tree_root.children)
+    new_in_1st = node_1st.children.difference(node_2nd.children)
+    removed_in_1st = node_2nd.children.difference(node_1st.children)
+    common_childs = node_1st.children.intersection(node_2nd.children)
 
-    print("new childs in 1st node: {}".format(GetNodeNames(new_children_in_first_node)))
-    print("removed childs in 1st node: {}".format(GetNodeNames(removed_children_in_first_node)))
+    print("new childs in 1st node: {}".format(GetNodeNames(new_in_1st)))
+    print("removed childs in 1st node: {}".format(GetNodeNames(removed_in_1st)))
     print("common childs: {}".format(GetNodeNames(common_childs)))
 
-    result = Node(first_tree_root.name, first_tree_root.timestamp, first_tree_root.type)
+    result = Node(node_1st.name, node_1st.timestamp, node_1st.type)
 
     # add info about changed entities
-    for new_child in new_children_in_first_node:
-        child: Node = copy.deepcopy(new_child)
+    for new_child in new_in_1st:
+        child = copy.deepcopy(new_child)
         child.label_new = True
         result.children.add(child)
 
-    for removed_child in removed_children_in_first_node:
-        child: Node = copy.deepcopy(removed_child)
+    for removed_child in removed_in_1st:
+        child = copy.deepcopy(removed_child)
         child.label_removed = True
         result.children.add(child)
 
     # TODO: modified
 
     # add common entities
-    list_repr_of_1st_node_children: list[Node] = list(first_tree_root.children)
-    list_repr_of_2nd_node_children: list[Node] = list(second_tree_root.children)
+    list_repr_of_1st_node_children = list(node_1st.children)
+    list_repr_of_2nd_node_children = list(node_2nd.children)
     for common_entity in common_childs:
         first_node_child: Node = None
         for child in list_repr_of_1st_node_children:
@@ -253,7 +146,7 @@ class NodePrinter:
             state = "removed"
         print("node '{}' type '{}' ts '{}' state '{}'".format(node.name, node.type, node.timestamp, state))
 
-def TestDifference():
+def TestDifference() -> None:
     node_1_0 = Node("a", ".")
     node_1_1 = Node("b", ".")
     node_1_2 = Node("c", ".")
@@ -303,11 +196,11 @@ def PrintHiToConsole(name: str):
 
     dump_file_name: str = "dumped_tree.json"
 
-    serializer = NodeSerializer(dump_file_name)
+    serializer = serialization.NodeSerializer(dump_file_name)
     tree.Traverse(serializer)
     serializer.Dump()
 
-    deserializer = NodeDeserializer(dump_file_name)
+    deserializer = serialization.NodeDeserializer(dump_file_name)
     root_node: Node = deserializer.GetRootNode()
     tree: FileSystemTree(root_node)
 
@@ -365,6 +258,12 @@ class GoogleDriveReader(TreeFactory):
 
 # entry point
 if __name__ == '__main__':
+
+    gdc = google_drive_client.GoogleDriveClient("../cfg/token.json", "../cfg/credentials.json")
+    gdc.RefreshMetadataTree()
+    exit(0)
+
+
     PrintHiToConsole('PyCharm')
 
     tf1: TreeFactory = FileSystemReader("bla")
